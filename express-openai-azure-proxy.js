@@ -1,7 +1,4 @@
-/**
- * type in package.json must be module
- * 请将 package.json 中的 type 设置为 module
- * 
+/*!
  * This is the main file for the Azure GPT Proxy server.
  * 该文件是 Azure GPT 代理服务器的主文件。
  * 
@@ -20,58 +17,56 @@
  * @author ShinChven
  */
 
-import express from 'express';
-import fetch from 'node-fetch';
-import { Transform } from 'stream';
-import { TextDecoder, TextEncoder } from 'util';
+const express = require('express');
+const axios = require('axios');
+const { Transform, Readable } = require('stream');
+const { TextDecoder, TextEncoder } = require('util');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-const resourceName = 'Your Resource Name'; // change to your resource name
+const resourceName = 'openai'; // change to your resource name
+// 资源名称，请更改为您的资源名称
 
 const mapper = {
   'gpt-3.5-turbo': 'gpt-35-turbo', // change to your deployment name
   'gpt-3.5-turbo-16k': 'gpt-35-turbo-16k', // change to your deployment name
-  // 'gpt-4': DEPLOY_NAME_GPT4
 };
+// 映射器，将模型名称映射到部署名称
+// 请更改为您的映射器
 
-/**
- * Returns the deployment name for a given model name.
- * 返回给定模型名称的部署名称。
- * 
- * @param {string} name - The name of the model.
- * @returns {string} The deployment name for the given model name.
- */
-const getModelDeployName = (name) => mapper[name] || 'gpt-35-turbo-16k' // please change to your deployment name
+const getModelDeployName = (name) => mapper[name] || 'gpt-35-turbo-16k';
+// 获取模型的部署名称
+// 请更改为您的部署名称
 
 const apiVersion = '2023-05-15'; // change api version if needed
+// API 版本，请根据需要更改
 
 app.use(express.json());
 
 /**
- * Proxies requests to the /chat/completions endpoint of the OpenAI API.
- * 将请求代理到 OpenAI API 的 /chat/completions 端点。
+ * Handle requests to /v1/chat/completions endpoint
+ * 处理 /v1/chat/completions 端点的请求
  */
 app.all('/v1/chat/completions', async (req, res) => {
   const fetchAPI = getFetchAPI(req, '/chat/completions');
-  const response = await fetch(fetchAPI, getPayload(req, res));
+  const response = await axios(getPayload(req, res, fetchAPI));
   handleResponse(req, res, response);
 });
 
 /**
- * Proxies requests to the /completions endpoint of the OpenAI API.
- * 将请求代理到 OpenAI API 的 /completions 端点。
+ * Handle requests to /v1/completions endpoint
+ * 处理 /v1/completions 端点的请求
  */
 app.all('/v1/completions', async (req, res) => {
   const fetchAPI = getFetchAPI(req, '/completions');
-  const response = await fetch(fetchAPI, getPayload(req, res));
+  const response = await axios(getPayload(req, res, fetchAPI));
   handleResponse(req, res, response);
 });
 
 /**
- * Returns a list of available models.
- * 返回可用模型的列表。
+ * Handle requests to /v1/models endpoint
+ * 处理 /v1/models 端点的请求
  */
 app.all('/v1/models', async (req, res) => {
   const data = {
@@ -112,20 +107,19 @@ app.all('/v1/models', async (req, res) => {
 });
 
 /**
- * Handles all other requests with a 404 Not Found response.
- * 用 404 Not Found 响应处理所有其他请求。
+ * Handle all other requests
+ * 处理所有其他请求
  */
 app.all('*', (req, res) => {
   res.status(404).send('404 Not Found');
 });
 
 /**
- * Returns the fetch API URL for a given request and path.
- * 返回给定请求和路径的 fetch API URL。
- * 
- * @param {Object} req - The request object.
- * @param {string} path - The path to the API endpoint.
- * @returns {string} The fetch API URL for the given request and path.
+ * Get the API endpoint URL for the given request
+ * 获取给定请求的 API 端点 URL
+ * @param {Object} req - The request object
+ * @param {string} path - The path to the endpoint
+ * @returns {string} - The API endpoint URL
  */
 function getFetchAPI(req, path) {
   const modelName = req.body?.model;
@@ -139,14 +133,14 @@ function getFetchAPI(req, path) {
 }
 
 /**
- * Returns the payload for a given request and response.
- * 返回给定请求和响应的有效载荷。
- * 
- * @param {Object} req - The request object.
- * @param {Object} res - The response object.
- * @returns {Object} The payload for the given request and response.
+ * Get the payload for the given request
+ * 获取给定请求的有效载荷
+ * @param {Object} req - The request object
+ * @param {Object} res - The response object
+ * @param {string} url - The API endpoint URL
+ * @returns {Object} - The request payload
  */
-function getPayload(req, res) {
+function getPayload(req, res, url) {
   const authKey = req.headers.authorization;
   if (!authKey) {
     res.status(403).send('Not allowed');
@@ -154,64 +148,41 @@ function getPayload(req, res) {
 
   return {
     method: req.method,
+    url,
     headers: {
       'Content-Type': 'application/json',
       'api-key': authKey.replace('Bearer ', ''),
     },
-    body: JSON.stringify(req.body) || '{}',
+    data: JSON.stringify(req.body) || '{}',
+    responseType: 'stream',
   };
 }
 
 /**
- * Handles the response from the OpenAI API and sends it to the client.
- * 处理来自 OpenAI API 的响应并将其发送到客户端。
- * 
- * @param {Object} req - The request object.
- * @param {Object} res - The response object.
- * @param {Object} response - The response from the OpenAI API.
+ * Handle the response from the API
+ * 处理来自 API 的响应
+ * @param {Object} req - The request object
+ * @param {Object} res - The response object
+ * @param {Object} axiosResponse - The response from the API
  */
-async function handleResponse(req, res, response) {
-  const stream = new Transform({
-    transform(chunk, encoding, callback) {
-      const decoder = new TextDecoder();
-      const encoder = new TextEncoder();
-      const newline = '\n';
-      const delimiter = '\n\n';
-
-      let buffer = '';
-      buffer += decoder.decode(chunk, { stream: true });
-      let lines = buffer.split(delimiter);
-
-      for (let i = 0; i < lines.length - 1; i++) {
-        this.push(encoder.encode(lines[i] + delimiter));
-      }
-
-      setTimeout(() => {
-        callback();
-      }, 20);
-    },
-  });
-
-  response.body.pipe(stream);
-
+async function handleResponse(req, res, axiosResponse) {
+  // Set headers and status
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Content-Type', 'application/json');
-  res.status(response.status);
-  stream.pipe(res);
+  res.status(axiosResponse.status);
+
+  // Pipe the response stream directly into the response
+  axiosResponse.data.pipe(res);
 }
 
 /**
- * Handles uncaught exceptions and logs them to the console.
- * 处理未捕获的异常并将其记录到控制台。
+ * Handle uncaught exceptions
+ * 处理未捕获的异常
  */
 process.on('uncaughtException', (err) => {
   console.error(err);
 });
 
-/**
- * Starts the server and listens on the specified port.
- * 启动服务器并监听指定的端口。
- */
 app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
 });
